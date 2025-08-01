@@ -1,6 +1,6 @@
 {
   "name": "vite-font-unicode-range",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "",
   "author": "Aolose",
   "type": "module",
@@ -37,6 +37,7 @@
     "vite-font",
     "unicode-range"
   ],
+  "license": "MIT",
   "dependencies": {
     "css-tree": "^3.1.0",
     "subset-font": "^2.4.0"

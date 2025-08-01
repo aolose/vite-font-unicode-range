@@ -1,7 +1,7 @@
-# vite-plugin-font-unicode-range
+# vite-font-unicode-range
 
-[![npm version](https://img.shields.io/npm/v/vite-plugin-font-unicode-range)](https://www.npmjs.com/package/vite-plugin-font-unicode-range)
-[![license](https://img.shields.io/npm/l/vite-plugin-font-unicode-range)](https://github.com/yourusername/vite-plugin-font-unicode-range/blob/main/LICENSE)
+[![npm version](https://img.shields.io/npm/v/vite-font-unicode-range)](https://www.npmjs.com/package/vite-font-unicode-range)
+[![license](https://img.shields.io/npm/l/vite-font-unicode-range)](https://github.com/yourusername/vite-font-unicode-range/blob/main/LICENSE)
 
 A Vite plugin that automatically analyzes your CSS and creates optimized font subsets based on actual unicode-range
 usage, significantly reducing font file sizes.
@@ -15,11 +15,11 @@ usage, significantly reducing font file sizes.
 ## Installation
 
 ```bash
-npm install vite-plugin-font-unicode-range --save-dev
+npm install vite-font-unicode-range --save-dev
 # or
-yarn add vite-plugin-font-unicode-range -D
+yarn add vite-font-unicode-range -D
 # or
-pnpm add vite-plugin-font-unicode-range -D
+pnpm add vite-font-unicode-range -D
 ```
 
 ## Usage
@@ -27,7 +27,7 @@ pnpm add vite-plugin-font-unicode-range -D
 vite.config.js
 
 ```js
-import optimizedFontSubset from 'vite-plugin-font-unicode-range';
+import optimizedFontSubset from 'vite-font-unicode-range';
 
 export default {
     plugins: [
