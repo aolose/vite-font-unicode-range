@@ -1,0 +1,44 @@
+{
+  "name": "vite-font-unicode-range",
+  "version": "0.0.1",
+  "description": "",
+  "author": "Aolose",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "vite build"
+  },
+  "homepage": "https://github.com/aolose/vite-font-unicode-range",
+  "devDependencies": {
+    "@types/node": "^20.12.2",
+    "vite": "^7",
+    "@types/css-tree": "^2.3.10",
+    "@types/subset-font": "^2.3.0",
+    "vite-plugin-dts": "^3.8.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aolose/vite-font-unicode-range.git"
+  },
+  "keywords": [
+    "vite-font",
+    "unicode-range"
+  ],
+  "dependencies": {
+    "css-tree": "^3.1.0",
+    "subset-font": "^2.4.0"
+  }
+}
