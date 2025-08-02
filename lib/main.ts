@@ -1,187 +1,228 @@
-import {createFilter} from "vite";
-import {parse, Declaration} from "css-tree";
-import subsetFont from "subset-font";
+import {createFilter, Plugin} from "vite"
+import {Block, parse} from "css-tree"
+import subsetFont from "subset-font"
+import path from "path"
+import fs from "fs"
 
-import path from "path";
-import fs from "fs";
-
-interface FontInfo {
-    ranges: { start: number; end: number }[];
-    fontFamily: string;
+type EmittedAsset = {
+    type: "asset"
+    name?: string
+    fileName?: string
+    originalFileName?: string | null
+    source: Buffer
 }
 
-interface PluginOptions {
-    include?: RegExp;
-    exclude?: RegExp;
-    fontExtensions?: RegExp;
+interface FontUnicodeRangePluginOptions {
+    include?: RegExp
+    exclude?: RegExp
+    fontExtensions?: RegExp
 }
 
-interface CssNode {
-    type: string;
-    block?: {
-        children: Iterable<CssNode>;
-    };
-    property?: string;
-    value?: {
-        children: Iterable<{ value?: string }>;
-    };
-    name?: string;
-}
+const assetCache = new Map<string, EmittedAsset>()
+const replaces = new Map<string, string>()
+const results: {
+    fileName: string
+    rate: string
+}[] = []
 
-const fontMap = new Map<string, FontInfo>();
-
-export default function fontUnicodeRangePlugin(options: PluginOptions = {}) {
+export default function fontUnicodeRangePlugin(
+    options: FontUnicodeRangePluginOptions = {}
+): Plugin {
     const {
         include = /\.(css|scss|sass|less|styl|stylus)$/,
         exclude,
         fontExtensions = /\.(woff2?|ttf|eot|otf)$/i,
-    } = options;
-
-    const cssFilter = createFilter(include, exclude);
-
+    } = options
+    const cssFilter = createFilter(include, exclude)
+    const fontSet = new Set<string>()
+    let cacheDir = ""
     return {
         name: "vite-plugin-font-unicode-range",
-        enforce: "post",
-
-        // Phase 1: Analyze CSS and collect font resource information
-        async transform(code: string, id: string) {
-            if (!cssFilter(id) || /node_module/.test(id)) return;
-            const raw = code;
-            if (!code) {
-                code = fs.readFileSync(path.resolve(id), "utf8");
-            }
+        enforce: "pre",
+        apply: "build",
+        configResolved(c) {
+            cacheDir = c.cacheDir
+        },
+        generateBundle() {
+            if (!results.length) return
+            const max = Math.max(...results.map(({fileName}) => fileName.length))
+            console.log(
+                "\n\n✨ [vite-plugin-font-unicode-range] - optimized:\n" +
+                results
+                    .map(
+                        ({fileName, rate}) =>
+                            `\x1b[34m${fileName.padEnd(max + 4)}\x1b[0m\x1b[90m-${rate}\x1b[0m`
+                    )
+                    .join("\n")
+            )
+        },
+        async transform(code, id: string) {
+            if (id) if (!cssFilter(id) || /node_modules/.test(id)) return
+            if (!code) return
+            let changed = false
             try {
-                const ast = parse(code);
-                ((ast as CssNode["block"])?.children as CssNode[]).forEach((node) => {
-                    if (node.type === "Atrule" && node.name === "font-face") {
-                        const fontFamily = getDeclarationValue(node, "font-family");
-                        const src = getDeclarationValue(node, "src");
-                        const unicodeRange = getDeclarationValue(node, "unicode-range");
-                        if (!fontFamily || !src || !unicodeRange) return;
-                        const ranges = parseUnicodeRange(unicodeRange);
-                        if (ranges.length === 0) return;
-                        // Create mapping from font file path to resources
-                        src.split(",").forEach((a: string) => {
-                            fontMap.set(fontName(a).trim(), {
-                                ranges,
-                                fontFamily,
-                            });
-                        });
-                    }
-                });
-            } catch (error) {
-                console.error("Error analyzing font resources:", error);
-            }
-            return raw;
-        },
+                const ast = parse(code) as Block
+                await Promise.all(
+                    ast.children.map(async (node) => {
+                        if (node.type === "Atrule" && node.name === "font-face") {
+                            const fontFamily = getDeclarationValue(node, "font-family")
+                            const src = getDeclarationValue(node, "src")
+                            const unicodeRange = getDeclarationValue(node, "unicode-range")
+                            if (!fontFamily || !src || !unicodeRange) return
+                            const ranges = parseUnicodeRange(unicodeRange)
+                            if (ranges.length === 0) return
+                            await Promise.all(
+                                extractFontUrls(src).map(async (url) => {
+                                    if (!fontExtensions.test(url)) return
+                                    let emitAsset = assetCache.get(url)
+                                    if (!emitAsset) {
+                                        const res = await this.resolve(url)
+                                        if (!res) return
+                                        const name = getFileName(url)
+                                        if (fontSet.has(name)) return
+                                        fontSet.add(name)
+                                        const info = {
+                                            before: 0,
+                                            after: 0,
+                                        }
+                                        const fontData = await fs.promises.readFile(res.id)
+                                        info.before = fontData.length
+                                        const ext = getTargetFormat(res.id)
+                                        const optimizedFontData = await subsetFont(
+                                            fontData,
+                                            rangStr(ranges),
+                                            {
+                                                targetFormat: ext,
+                                            }
+                                        )
+                                        info.after = optimizedFontData.length
+                                        const reduction = 100 - (info.after * 100) / info.before
+                                        const fileName = `${cacheDir}/font-subset/${name}`
+                                        emitAsset = {
+                                            type: "asset",
+                                            name: name,
+                                            fileName,
+                                            source: optimizedFontData,
+                                        }
 
-        // Phase 2: Process font files during generation
-        async generateBundle(_: any, bundle: Record<string, any>) {
-            const fontAssets = Object.entries(bundle).filter(([_, asset]) => {
-                return asset.type === "asset" && fontExtensions.test(asset.fileName);
-            });
-            for (const [fileName, asset] of fontAssets) {
-                try {
-                    const fontInfo = fontMap.get(fontName(fileName));
-                    if (!fontInfo) continue;
-                    // Subset the font
-                    const subsettedFont = await subsetFont(
-                        asset.source,
-                        rangStr(fontInfo.ranges),
-                        {
-                            targetFormat: getTargetFormat(fileName) as 'woff',
+                                        if (info.after < info.before) {
+                                            replaces.set(url, fileName)
+                                            results.push({
+                                                fileName: name,
+                                                rate:
+                                                    `${reduction.toFixed(0)}%`.padEnd(8) +
+                                                    `${formatSize(info.before)} → ${formatSize(info.after)}`,
+                                            })
+                                            this.emitFile(emitAsset)
+                                        } else {
+                                            delete emitAsset.fileName
+                                        }
+                                        assetCache.set(url, emitAsset)
+                                    }
+                                    if (emitAsset && emitAsset.fileName) {
+                                        changed = true
+                                    }
+                                })
+                            )
                         }
-                    );
-                    const old = asset.source.length;
-                    asset.source = subsettedFont;
-                    console.log(
-                        `Optimized font ${fileName} for ${fontInfo.fontFamily} [${Math.floor((subsettedFont.length - old) * 100 / old)}%]`
-                    );
-                } catch (error) {
-                    console.error(`Error subsetting font ${fileName}:`, error);
+                    })
+                )
+                if (changed) {
+                    for (const [s, t] of replaces) {
+                        code = code.replace(new RegExp(s, "g"), t)
+                    }
+                    return {code}
                 }
+            } catch (error) {
+                console.error("Error analyzing CSS:", error)
             }
         },
-    };
+    }
 }
 
-function rangStr(s: { start: number; end: number }[]): string {
-    const v: number[] = [];
+function formatSize(bytes: number) {
+    return (bytes / 1024).toFixed(1) + "KB"
+}
+
+function extractFontUrls(src: string): string[] {
+    return src.split(",").map((a) => a.trim())
+}
+
+function rangStr(s: Array<{ start: number; end: number }>): string {
+    const v: number[] = []
     s.forEach(({start, end}) => {
         for (let i = start; i < end; i++) {
-            const o = i;
-            v.push(o);
+            v.push(i)
         }
-    });
-    // @ts-ignore
-    return String.fromCharCode(...new Set(v));
+    })
+    return String.fromCharCode(...new Set(v))
 }
 
-function fontName(a: string): string {
-    const file = a.split("/").pop() || "";
-    return file.replace(/\..*?([a-z]+\d?)$/, ".$1");
+function getFileName(a: string): string {
+    const file = a.split("/").pop() || ""
+    return file.replace(/\..*?([a-z]+\d?)$/, ".$1")
 }
 
-function getDeclarationValue(node: CssNode, property: string): string | null {
-    const child = Array.from(node.block?.children || []).find((a) => {
-        return a.type === "Declaration" && a.property === property;
-    }) as Declaration | undefined;
-
+function getDeclarationValue(node: any, property: string): string | null {
+    const child = Array.from(node.block?.children || []).find((a: any) => {
+        return a.type === "Declaration" && a.property === property
+    })
     if (child) {
         return (
             // @ts-ignore
             Array.from(child.value?.children || [])
-                .filter((a) => (a as any).value)
-                .map((a) => (a as any).value)
+                .filter((a: any) => a.value)
+                .map((a: any) => a.value)
                 .join(" ") || null
-        );
+        )
     }
-    return null;
+    return null
 }
 
-// Helper function: Parse unicode-range
-function parseUnicodeRange(rangeValue: string): { start: number; end: number }[] {
-    const ranges: { start: number; end: number }[] = [];
-    const parts = rangeValue.split(/\s*,\s*/);
+function parseUnicodeRange(
+    rangeValue: string
+): Array<{ start: number; end: number }> {
+    const ranges: Array<{ start: number; end: number }> = []
+    const parts = rangeValue.split(/\s*,\s*/)
 
     for (const part of parts) {
         if (part.includes("?")) {
-            const prefix = part.match(/U\+([0-9A-Fa-f?]+)/)![1];
-            const start = parseInt(prefix.replace(/\?/g, "0"), 16);
-            const end = parseInt(prefix.replace(/\?/g, "F"), 16);
-            ranges.push({start, end});
+            const prefix = part.match(/U\+([0-9A-Fa-f?]+)/)?.[1] || ""
+            const start = parseInt(prefix.replace(/\?/g, "0"), 16)
+            const end = parseInt(prefix.replace(/\?/g, "F"), 16)
+            ranges.push({start, end})
         } else if (part.includes("-")) {
-            const [startHex, endHex] = part
-                .match(/U\+([0-9A-Fa-f]+)-([0-9A-Fa-f]+)/)!
-                .slice(1);
-            ranges.push({
-                start: parseInt(startHex, 16),
-                end: parseInt(endHex, 16),
-            });
+            const match = part.match(/U\+([0-9A-Fa-f]+)-([0-9A-Fa-f]+)/)
+            if (match) {
+                ranges.push({
+                    start: parseInt(match[1], 16),
+                    end: parseInt(match[2], 16),
+                })
+            }
         } else {
-            const codePoint = part.match(/U\+([0-9A-Fa-f]+)/)![1];
-            const value = parseInt(codePoint, 16);
-            ranges.push({start: value, end: value});
+            const codePoint = part.match(/U\+([0-9A-Fa-f]+)/)?.[1] || "0"
+            const value = parseInt(codePoint, 16)
+            ranges.push({start: value, end: value})
         }
     }
 
-    return ranges;
+    return ranges
 }
 
-function getTargetFormat(fileName: string): string | undefined {
-    const ext = path.extname(fileName).toLowerCase();
+function getTargetFormat(
+    fileName: string
+): "woff" | "woff2" | "sfnt" | "truetype" {
+    const ext = path.extname(fileName).toLowerCase()
     switch (ext) {
         case ".woff":
-            return "woff";
+            return "woff"
         case ".woff2":
-            return "woff2";
+            return "woff2"
+        case ".sfnt":
+            return "sfnt"
         case ".ttf":
-            return "truetype";
-        case ".eot":
-            return "eot";
-        case ".otf":
-            return "opentype";
+            return "truetype"
         default:
-            return undefined; // Default to woff2
+            return "woff2"
     }
 }

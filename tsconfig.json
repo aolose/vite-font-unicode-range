@@ -1,15 +1,18 @@
 {
-	"include": ["lib"],
-	"compilerOptions": {
-		"allowJs": true,
-		"checkJs": true,
-		"esModuleInterop": true,
-		"forceConsistentCasingInFileNames": true,
-		"resolveJsonModule": true,
-		"skipLibCheck": true,
-		"sourceMap": true,
-		"strict": true,
-		"module": "esnext",
-		"moduleResolution": "bundler"
-	}
+  "include": [
+    "lib"
+  ],
+  "compilerOptions": {
+    "target": "es2015",
+    "allowJs": true,
+    "checkJs": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "strict": true,
+    "module": "esnext",
+    "moduleResolution": "bundler"
+  }
 }
