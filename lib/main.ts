@@ -1,16 +1,8 @@
-import {createFilter, Plugin} from "vite"
+import {Alias, createFilter, Plugin} from "vite"
 import {Block, parse} from "css-tree"
 import subsetFont from "subset-font"
 import path from "path"
 import fs from "fs"
-
-type EmittedAsset = {
-    type: "asset"
-    name?: string
-    fileName?: string
-    originalFileName?: string | null
-    source: Buffer
-}
 
 interface FontUnicodeRangePluginOptions {
     include?: RegExp
@@ -18,8 +10,6 @@ interface FontUnicodeRangePluginOptions {
     fontExtensions?: RegExp
 }
 
-const assetCache = new Map<string, EmittedAsset>()
-const replaces = new Map<string, string>()
 const results: {
     fileName: string
     rate: string
@@ -34,14 +24,17 @@ export default function fontUnicodeRangePlugin(
         fontExtensions = /\.(woff2?|ttf|eot|otf)$/i,
     } = options
     const cssFilter = createFilter(include, exclude)
-    const fontSet = new Set<string>()
+    const fontMap = new Map<string, string>()
     let cacheDir = ""
+    let alias: Alias[] = []
+    const resolvedCss = new Set()
     return {
         name: "vite-plugin-font-unicode-range",
         enforce: "pre",
         apply: "build",
         configResolved(c) {
             cacheDir = c.cacheDir
+            alias = c.resolve.alias
         },
         generateBundle() {
             if (!results.length) return
@@ -56,10 +49,14 @@ export default function fontUnicodeRangePlugin(
                     .join("\n")
             )
         },
-        async transform(code, id: string) {
-            if (id) if (!cssFilter(id) || /node_modules/.test(id)) return
-            if (!code) return
-            let changed = false
+        async resolveId(id: string) {
+            if (resolvedCss.has(id) || !cssFilter(id) || /node_modules/.test(id))
+                return
+            resolvedCss.add(id)
+            const res = await this.resolve(id)
+            if (!res) return
+            id = res.id
+            const code = await fs.promises.readFile(id, "utf8")
             try {
                 const ast = parse(code) as Block
                 await Promise.all(
@@ -74,65 +71,48 @@ export default function fontUnicodeRangePlugin(
                             await Promise.all(
                                 extractFontUrls(src).map(async (url) => {
                                     if (!fontExtensions.test(url)) return
-                                    let emitAsset = assetCache.get(url)
-                                    if (!emitAsset) {
+                                    if (!alias.find((a) => a.find === url)) {
                                         const res = await this.resolve(url)
                                         if (!res) return
                                         const name = getFileName(url)
-                                        if (fontSet.has(name)) return
-                                        fontSet.add(name)
-                                        const info = {
-                                            before: 0,
-                                            after: 0,
-                                        }
-                                        const fontData = await fs.promises.readFile(res.id)
-                                        info.before = fontData.length
-                                        const ext = getTargetFormat(res.id)
-                                        const optimizedFontData = await subsetFont(
-                                            fontData,
-                                            rangStr(ranges),
-                                            {
-                                                targetFormat: ext,
+                                        let replacement = fontMap.get(name)
+                                        if (!replacement) {
+                                            const fontData = await fs.promises.readFile(res.id)
+                                            const ext = getTargetFormat(res.id)
+                                            const optimizedFontData = await subsetFont(
+                                                fontData,
+                                                rangStr(ranges),
+                                                {
+                                                    targetFormat: ext,
+                                                }
+                                            )
+                                            const reduction = 100 - (optimizedFontData.length * 100) / fontData.length
+                                            if (!fs.existsSync(cacheDir)) {
+                                                await fs.promises.mkdir(cacheDir)
                                             }
-                                        )
-                                        info.after = optimizedFontData.length
-                                        const reduction = 100 - (info.after * 100) / info.before
-                                        const fileName = `${cacheDir}/font-subset/${name}`
-                                        emitAsset = {
-                                            type: "asset",
-                                            name: name,
-                                            fileName,
-                                            source: optimizedFontData,
+                                            const fileName = `${cacheDir}/subset-${name}`
+                                            if (optimizedFontData.length < fontData.length) {
+                                                replacement = fileName
+                                                await fs.promises.writeFile(fileName, optimizedFontData)
+                                                fontMap.set(name, fileName)
+                                                results.push({
+                                                    fileName: name,
+                                                    rate:
+                                                        `${reduction.toFixed(0)}%`.padEnd(8) +
+                                                        `${formatSize(fontData.length)} → ${formatSize(optimizedFontData.length)}`,
+                                                })
+                                            } else replacement = 'skip'
                                         }
-
-                                        if (info.after < info.before) {
-                                            replaces.set(url, fileName)
-                                            results.push({
-                                                fileName: name,
-                                                rate:
-                                                    `${reduction.toFixed(0)}%`.padEnd(8) +
-                                                    `${formatSize(info.before)} → ${formatSize(info.after)}`,
-                                            })
-                                            this.emitFile(emitAsset)
-                                        } else {
-                                            delete emitAsset.fileName
-                                        }
-                                        assetCache.set(url, emitAsset)
-                                    }
-                                    if (emitAsset && emitAsset.fileName) {
-                                        changed = true
+                                        if (replacement !== 'skip') alias.push({
+                                            find: url,
+                                            replacement: replacement,
+                                        })
                                     }
                                 })
                             )
                         }
                     })
                 )
-                if (changed) {
-                    for (const [s, t] of replaces) {
-                        code = code.replace(new RegExp(s, "g"), t)
-                    }
-                    return {code}
-                }
             } catch (error) {
                 console.error("Error analyzing CSS:", error)
             }
